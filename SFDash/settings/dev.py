@@ -60,7 +60,7 @@ ROOT_URLCONF = 'SFDash.urls'
 TEMPLATES = [
     {
         'BACKEND': 'django.template.backends.django.DjangoTemplates',
-        'DIRS': ['dist/static/'], # add dist to
+        'DIRS': ['dist/static/src/vue/dist/'], # add dist to
         'APP_DIRS': True,
         'OPTIONS': {
             'context_processors': [
@@ -166,7 +166,7 @@ STATIC_URL = '/static/'
 # Place static in the same location as webpack build files
 STATIC_ROOT = 'dist/static'
 STATICFILES_DIRS = [
-    'static/src/vue/dist'
+    'static/'
 ]
 
 ##########

@@ -2,3 +2,4 @@ dist/
 frontend/node_modules
 static/
 venv/
+*.sqlit3

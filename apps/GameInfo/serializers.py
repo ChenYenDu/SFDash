@@ -24,3 +24,4 @@ class BJLGoodRecordSerializer(serializers.ModelSerializer):
     class Meta:
         model = BJLGoodRecord
         fields = ['pk', 'content', 'filter_len', 'filter_single', 'filter_double', 'cut_start', 'cut_end', 'created_at', 'name']
+
