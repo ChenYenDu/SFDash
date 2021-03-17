@@ -3,3 +3,4 @@ frontend/node_modules
 static/
 venv/
 *.sqlit3
+.vscode/
