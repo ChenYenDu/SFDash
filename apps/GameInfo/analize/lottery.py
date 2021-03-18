@@ -8,6 +8,7 @@ Naming Rule: GameLotteryViewSet{GameType}
 
 import datetime
 import pandas as pd
+import numpy as np
 
 from django.db.models import Count, F, Q, Subquery, Sum
 from django.http import JsonResponse
@@ -129,6 +130,36 @@ class LotteryAnaBase(ListAPIView):
 
             response.update(result)
             return Response(response)
+    
+    def getSNO(self, target, col):
+        """
+        計算連續未開出次數
+        target: 判斷的目標
+        col: 計算的欄位
+        """
+        result = dict(zip(target, [0] * len(target)))
+        colLen = len(col)
+
+        # 避免使用for去計算連續未出現次數,
+        # 直接用 pandas loc 找到第一個符合的index
+        for ts in target:
+            temp = col.loc[ts.isin(col)]
+            result = temp.index[0] if len(temp) > 0 else colLen
+
+        return result
+    
+    def getSSO(self, target, col):
+        """
+        計算連續開出次數
+        target: 判斷的目標
+        col: 計算的欄位
+        """
+        result = dict(zip(target, [0] * len(target)))
+
+        for ts in target:
+            result[ts] = col.loc[!ts.isin(col)].index[0]
+
+        return result
         
 
 class LotteryViewSetPK(LotteryAnaBase):
@@ -153,16 +184,54 @@ class LotteryViewSetPK(LotteryAnaBase):
         super().data_manipulate(df)
         result = {}
         
-        # 建立拆解後的欄位名稱
-        columns = [
+        # 建立拆解後的欄位名稱：名次
+        ranks = [
             "NO1", "NO2", "NO3", "NO4", "NO5",
             "NO6", "NO7", "NO8", "NO9", "NO10"
         ]
 
         # split number to each columns
-        df[columns] = df.number.str.split(',', n=10, expand=True)
+        df[ranks] = df.number.str.split(',', n=10, expand=True)
         del df['number'] # number is no longer used, free memory
 
-        # 計算每個名次 每個球 累積開出次數
+        # 計算每個名次 每一車 累積開出次數
+        count_df = df[ranks].apply(pd.value_counts)
+        
+        # 創建從 01 ~ 10 的車號
+        cars = [str(ele).zfill(2) for ele in range(1, 11)]
+
+        # 計算每個名次 每一車 連續開出次數
+        sso = pd.DataFrame([
+            self.target(cars, col=df[col] for col in ranks)
+        ], index=columns).T
+
+        # 計算每個名次 每一車 連續為開出次數
+        sno = pd.DataFrame([
+            self.target(cars, col=df[col] for col in ranks)
+        ], index=ranks).T
+
+        # 計算 大小/單雙 累積開出次數
+        count_df = count_df.rename_axis('cars').reset_index()
+        count_df['cars'] = count_df['cars'].astype('int')
+        # 建立 大小/單雙 的欄位
+        count_df['DS'] = count_df['cars'] \
+            .apply(lambda ele: 'D' if ele > 5 else 'S')
+        count_df['EJ'] = count_df['cars'] \
+            .apply(lambda ele: 'J' if ele % 2 else 'E')
+        
+        ds_count = count_df.groupby('DS').sum() \
+            .drop(columns=['balls']).to_dict() 
+        ej_count = count_df.groupby('EJ').sum() \
+            .drop(columns=['balls']).to_dict()
+
+        # 計算 大小/單雙 連續未開出次數
+        sno = sno.rename('cars').reset_index()
+        sno['cars'] = sno['cars'].astype('int')
+        sno['DS'] = sno['cars'].apply(lambda ele: 'D' if ele > 5 else 'S')
+        sno['EJ'] = sno['cars'].apply(lambda ele: 'J' if ele % 2 else 'E')
+        ds_sno = sno.groupby('DS').min().drop(columns=['cars', 'DS']).to_dict()
+        ej_son = sno.groupby('EJ').min().drop(columns=['cars', 'EJ']).to_dict()
+        
+        # 計算 冠亞組合 累積開出次數
 
         return result
