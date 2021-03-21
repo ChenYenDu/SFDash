@@ -35,7 +35,7 @@ class LotteryAnaBase(ListAPIView):
             # raise ValueError("錯誤日期格式, 格式是 yyy-mm-dd")
             return False
     
-    def get_data(start_date, end_date, playkey, cols=['number', 'period']):
+    def get_data(self, start_date, end_date, playkey, cols=['number', 'period']):
         """
         從資料庫抓取時間區間內該playkey的資料欄位[cols]
         """
@@ -47,7 +47,7 @@ class LotteryAnaBase(ListAPIView):
             Q(lottime__range=(start_date, end_date)) &
             Q(playkey = playkey) &
             Q(status__in=(0, 1))) \
-                .values(*cols) \ 
+                .values(*cols) \
                     .order_by(F('lottime').desc())
 
         # 轉換成 pandas DataFrame 之前確認資料庫取得資料正常
@@ -123,7 +123,7 @@ class LotteryAnaBase(ListAPIView):
             response.update(df_info)
             return JsonResponse(response, safe=False)
         else: # error_code 為 0 繼續分析
-            df = df_info.pop('df')
+            df = df_info.pop('df')
             response['period'] = df_info['period']
             
             result = self.data_manipulate(df)
@@ -143,10 +143,10 @@ class LotteryAnaBase(ListAPIView):
         # 避免使用for去計算連續未出現次數,
         # 直接用 pandas loc 找到第一個符合的index
         for ts in target:
-            temp = col.loc[ts.isin(col)]
-            result = temp.index[0] if len(temp) > 0 else colLen
+            ff = col.loc[col.apply(lambda ele: ts in ele)]
+            result[ts] = ff.index[0] if len(ff) > 0 else colLen
 
-        return result
+        return temp
     
     def getSSO(self, target, col):
         """
@@ -157,7 +157,7 @@ class LotteryAnaBase(ListAPIView):
         result = dict(zip(target, [0] * len(target)))
 
         for ts in target:
-            result[ts] = col.loc[!ts.isin(col)].index[0]
+            result[ts] = col.loc[col.apply(lambda ele: ts not in ele)].index[0]
 
         return result
         
@@ -200,38 +200,88 @@ class LotteryViewSetPK(LotteryAnaBase):
         # 創建從 01 ~ 10 的車號
         cars = [str(ele).zfill(2) for ele in range(1, 11)]
 
-        # 計算每個名次 每一車 連續開出次數
-        sso = pd.DataFrame([
-            self.target(cars, col=df[col] for col in ranks)
-        ], index=columns).T
-
         # 計算每個名次 每一車 連續為開出次數
         sno = pd.DataFrame([
-            self.target(cars, col=df[col] for col in ranks)
+            self.getSNO(cars, col=df[col]) for col in ranks
         ], index=ranks).T
+
+        # 先把需要用到的資料轉成 dictionary
+        rankCount = count_df.to_dict()
+        rankSNO = sno_df.to_dict()
 
         # 計算 大小/單雙 累積開出次數
         count_df = count_df.rename_axis('cars').reset_index()
         count_df['cars'] = count_df['cars'].astype('int')
+
         # 建立 大小/單雙 的欄位
         count_df['DS'] = count_df['cars'] \
             .apply(lambda ele: 'D' if ele > 5 else 'S')
         count_df['EJ'] = count_df['cars'] \
             .apply(lambda ele: 'J' if ele % 2 else 'E')
         
-        ds_count = count_df.groupby('DS').sum() \
-            .drop(columns=['balls']).to_dict() 
-        ej_count = count_df.groupby('EJ').sum() \
-            .drop(columns=['balls']).to_dict()
-
+        ds_count = count_df.groupby('DS')[ranks] \ 
+            .sum().to_dict() 
+        ej_count = count_df.groupby('EJ')[ranks] \
+            .sum().to_dict()
+            
         # 計算 大小/單雙 連續未開出次數
-        sno = sno.rename('cars').reset_index()
+        sno = sno.rename_axis('cars').reset_index()
         sno['cars'] = sno['cars'].astype('int')
         sno['DS'] = sno['cars'].apply(lambda ele: 'D' if ele > 5 else 'S')
         sno['EJ'] = sno['cars'].apply(lambda ele: 'J' if ele % 2 else 'E')
-        ds_sno = sno.groupby('DS').min().drop(columns=['cars', 'DS']).to_dict()
-        ej_son = sno.groupby('EJ').min().drop(columns=['cars', 'EJ']).to_dict()
+        ds_sno = sno.groupby('DS')[ranks].min().to_dict()
+        ej_son = sno.groupby('EJ')[ranks].min().to_dict()
         
         # 計算 冠亞組合 累積開出次數
+        cs_pair = df.groupby(ranks[:2])['period'].size().reset_index()
 
+        # 計算 龍虎 累積開出次數
+        df[ranks] = df[ranks].apply(pd.to_numeric, errors="coerce")
+        
+        lh_columns = ['LH1', 'LH2', 'LH3', 'LH4', 'LH5']
+
+        df = df.assign(
+            LH1=df['NO1'] > df['NO10'],
+            LH2=df['NO2'] > df['NO9'],
+            LH3=df['NO3'] > df['NO8'],
+            LH4=df['NO4'] > df['NO7'],
+            LH5=df['NO5'] > df['NO6'],
+        )
+
+        df[lh_columns] = np.where(lh_columns, 'L', 'H')
+
+        lh_count = df[lh_count].apply(pd.value_counts).to_dict()
+
+        # 計算 龍虎 連續未開出次數
+        lh_sno = pd.DataFrame(
+            [self.getSNO(target=['L', 'H'], col=df[col]) for col in lh_columns],
+            index=ranks[:5]
+        ).to_dict('index')
+
+        # 計算 冠亞和值 累積開出次數
+        df['CS_Total'] = df['NO1'] + df['NO2']
+        cs_total_count = df.groupby('CS_Total')['period'] \
+            .size().reset_index()
+
+        # 計算 冠亞和值 大小、單雙累積開出次數
+        cs_total_count['DS'] = cs_total_count['CS_Total'] \
+            .apply(lambda ele: 'H' if ele == 11 else 'D' if ele > 11 else 'S')
+
+        cs_total_count['EJ'] = cs_total_count['CS_Total'] \
+            .apply(lambda ele: 'H' if ele == 11 else 'J' if ele % 2 else 'E')
+        
+        cs_ds_count = cs_total_count.groupby('DS')['period'].sum().to_dict()
+        cs_ej_count = cs_total_count.groupby('EJ')['period'].sum().to_dict()
+
+        # 重新架構回傳的資料
+        result['CS_Total_Count'] = cs_total_count[['CS_Total', 'count']].to_dict('records')
+        result['CS_DS_Count'] = cs_ds_count
+        result['CS_EJ_Count'] = cs_ej_count
+        
+        result['Rank_Count'] = rankCount
+        result['Rank_SNO'] = rankSNO
+        result['DS_Count'] = ds_count
+        result['EJ_Count'] = ej_count
+        result['DS_SNO'] = ds_sno
+        result['EJ_SNO'] = ej_son
         return result
