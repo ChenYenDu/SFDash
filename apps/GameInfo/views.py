@@ -1,7 +1,6 @@
 import datetime
 import numpy as np
 import pandas as pd
-import functools import reduce
 import json
 import ast
 
@@ -15,8 +14,9 @@ from rest_framework.generics import GenericAPIView, ListAPIView, DestroyAPIView
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from apps.GameInfo.models import BJLGoodRecord
 from apps.GameInfo.pagination import StandardResultSetPagination
-from apps.GameInfo.serializer import BJLGoodRecordSerializer
+from apps.GameInfo.serializers import BJLGoodRecordSerializer
 from apps.GameInfo.analize.stimulator import ReverseBJL, BJLVer2
 
 # Create your views here.

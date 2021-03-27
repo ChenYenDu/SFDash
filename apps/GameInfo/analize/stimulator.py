@@ -1,6 +1,6 @@
 import random
 import math
-import itertools import product
+from itertools import product
 from multiprocessing import Process, Value, Array, Manager
 
 class ReverseBJL:

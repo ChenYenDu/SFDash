@@ -25,6 +25,7 @@ class LotteryAnaBase(ListAPIView):
     開獎分析用基礎架構, 其他其他
     """
     queryset = GameLottery.objects.using('bo2')
+    default_playkey = ''
 
     def validate(self, date_text):
         try:
@@ -51,7 +52,7 @@ class LotteryAnaBase(ListAPIView):
                     .order_by(F('lottime').desc())
 
         # 轉換成 pandas DataFrame 之前確認資料庫取得資料正常
-        if not lottery.exist():
+        if not lottery.exists():
             result['error_code'] = 1
             result['message'] = '選取條件查無資料'
             return result
@@ -64,6 +65,7 @@ class LotteryAnaBase(ListAPIView):
         # 用戶需求： 回傳最新 period
         result['period'] = df['period'].values[0]
         result['df'] = df
+        result['error_code'] = 0
 
         return result
 
@@ -79,7 +81,7 @@ class LotteryAnaBase(ListAPIView):
 
         StartDate = request.query_params.get('StartDate', todate)
         EndDate = request.query_params.get('EndDate', todate)
-        Playkey = request.query_params.get('Playkey', 'WNPK_p')
+        Playkey = request.query_params.get('Playkey', self.default_playkey)
 
         response = {
             'StartDate': StartDate,
@@ -111,12 +113,13 @@ class LotteryAnaBase(ListAPIView):
 
         # 如果格式都沒問題 StartDate 和 EndDate 格式已經是 datetime
         # 確認日期順序避免資料庫抓不到資料
-        if EndDate > StartDate:
+        if StartDate > EndDate:
             StartDate, EndDate = EndDate, StartDate # 直接互換, 或回傳error
         
         # 取得分析用資料
         Playkey = Playkey.replace('_p', '')
-        df_info = self.get_data()
+        self.playkey = Playkey
+        df_info = self.get_data(StartDate, EndDate, Playkey)
 
         # 取回 df_info 之後先判斷 error_code 是否為 0
         if df_info['error_code']: # error_code 不為 0 直接回傳
@@ -147,7 +150,7 @@ class LotteryAnaBase(ListAPIView):
             ff = col.loc[col.apply(lambda ele: ts in ele)]
             result[ts] = ff.index[0] if len(ff) > 0 else colLen
 
-        return temp
+        return result
     
     def getSSO(self, target, col):
         """
@@ -162,9 +165,10 @@ class LotteryAnaBase(ListAPIView):
 
         return result
         
-class LotteryViewSetPK(LotteryAnaBase):
+class GameLotteryViewSetPK(LotteryAnaBase):
     """
     PK類開獎分析API:
+
     1. **ranks** 各名次開獎資料
         - __ballCount__:  &#8194 球號： 累積開出次數
         - __ballSNO__: &#8194 球號： 連續未開次數
@@ -179,6 +183,7 @@ class LotteryViewSetPK(LotteryAnaBase):
     4. **csEJCount:** &#8194 冠亞和值 **單雙** 累積開出次數
     5. **csTotalCount:** &#8194 冠亞和值 **和值** 累積開出次數
     """
+    default_playkey = "WNPK"
 
     def data_manipulate(self, df):
         super().data_manipulate(df)
@@ -206,8 +211,8 @@ class LotteryViewSetPK(LotteryAnaBase):
         ], index=ranks).T
 
         # 先把需要用到的資料轉成 dictionary
-        rankCount = count_df.to_dict()
-        rankSNO = sno_df.to_dict()
+        rank_count = count_df.to_dict()
+        rank_sno = sno.to_dict()
 
         # 計算 大小/單雙 累積開出次數
         count_df = count_df.rename_axis('cars').reset_index()
@@ -219,7 +224,7 @@ class LotteryViewSetPK(LotteryAnaBase):
         count_df['EJ'] = count_df['cars'] \
             .apply(lambda ele: 'J' if ele % 2 else 'E')
         
-        ds_count = count_df.groupby('DS')[ranks] \ 
+        ds_count = count_df.groupby('DS')[ranks] \
             .sum().to_dict() 
         ej_count = count_df.groupby('EJ')[ranks] \
             .sum().to_dict()
@@ -230,7 +235,7 @@ class LotteryViewSetPK(LotteryAnaBase):
         sno['DS'] = sno['cars'].apply(lambda ele: 'D' if ele > 5 else 'S')
         sno['EJ'] = sno['cars'].apply(lambda ele: 'J' if ele % 2 else 'E')
         ds_sno = sno.groupby('DS')[ranks].min().to_dict()
-        ej_son = sno.groupby('EJ')[ranks].min().to_dict()
+        ej_sno = sno.groupby('EJ')[ranks].min().to_dict()
         
         # 計算 冠亞組合 累積開出次數
         cs_pair = df.groupby(ranks[:2])['period'].size().reset_index()
@@ -248,9 +253,9 @@ class LotteryViewSetPK(LotteryAnaBase):
             LH5=df['NO5'] > df['NO6'],
         )
 
-        df[lh_columns] = np.where(lh_columns, 'L', 'H')
+        df[lh_columns] = np.where(df[lh_columns], 'L', 'H')
 
-        lh_count = df[lh_count].apply(pd.value_counts).to_dict()
+        lh_count = df[lh_columns].apply(pd.value_counts).to_dict()
 
         # 計算 龍虎 連續未開出次數
         lh_sno = pd.DataFrame(
@@ -274,23 +279,31 @@ class LotteryViewSetPK(LotteryAnaBase):
         cs_ej_count = cs_total_count.groupby('EJ')['period'].sum().to_dict()
 
         # 重新架構回傳的資料
-        result['CS_Total_Count'] = cs_total_count[['CS_Total', 'count']].to_dict('records')
+        result['CS_Total_Count'] = cs_total_count[['CS_Total', 'period']].to_dict('records')
         result['CS_DS_Count'] = cs_ds_count
         result['CS_EJ_Count'] = cs_ej_count
 
         resultCollect = {}
-        for rank in rank_name:
-            tempRecord = {}
-            tempRecord['Ball_Count'] = rankCount[rank]
-            tempRecord['Ball_SNO'] = rankSNO[rank]
-            tempRecord['DS_Count'] = DSCount[rank]
-            tempRecord['EJ_Count'] = EJCount[rank]
-            tempRecord['DE_SNO'] = DSSNO[rank]
-            tempRecord['EJ_SNO'] = EJSNO[rank]
+        lh_replace = {
+            'NO1': 'LH1',
+            'NO2': 'LH2',
+            'NO3': 'LH3',
+            'NO4': 'LH4',
+            'NO5': 'LH5',
+        }
 
-            if rank in rank_name[:5]:
-                tempRecord['LH_Count'] = LHCount[rank]
-                tempRecord['LH_SNO'] = LHSNO[rank]
+        for rank in ranks:
+            tempRecord = {}
+            tempRecord['Ball_Count'] = rank_count[rank]
+            tempRecord['Ball_SNO'] = rank_sno[rank]
+            tempRecord['DS_Count'] = ds_count[rank]
+            tempRecord['EJ_Count'] = ej_count[rank]
+            tempRecord['DE_SNO'] = ds_sno[rank]
+            tempRecord['EJ_SNO'] = ej_sno[rank]
+
+            if rank in ranks[:5]:
+                tempRecord['LH_Count'] = lh_count[lh_replace[rank]]
+                tempRecord['LH_SNO'] = lh_sno[rank]
 
             resultCollect[rank] = tempRecord
 
@@ -298,7 +311,7 @@ class LotteryViewSetPK(LotteryAnaBase):
         return result
 
 class GameLotteryViewSetSSC(LotteryAnaBase):
-   """
+    """
     代碼: A1 -> 萬 | A2 -> 千 | A3 -> 百 | A4 -> 十 | A5 -> 個
 
     1. ** ballCount: ** &#8194 每個位置每一號 累積開出次數
@@ -313,10 +326,14 @@ class GameLotteryViewSetSSC(LotteryAnaBase):
     10. ** ejSNO: ** &#8194 單雙 連續未開出次數
     """
 
+    default_playkey = "WNSSC"
+
     def data_manipulate(self, df):
         super().data_manipulate(df)
         result = {}
 
+        Playkey = self.playkey
+        
         # 3, 4星彩判斷
         starDict = {
             'threeStar': ['D3SSC', 'P3SSC', 'SHSSC', 'TWD3SSC'],
@@ -451,7 +468,7 @@ class GameLotteryViewSetSSC(LotteryAnaBase):
 
         return result
 
-class GameLotteryViewSetSSC(LotteryAnaBase):
+class GameLotteryViewSetLHC(LotteryAnaBase):
     """
     1. ** ballCount: ** &#8194 單一號碼 累積開出次數
     2. ** ballSNO: ** &#8194 單一號碼 連續「未開出」次數
@@ -474,11 +491,13 @@ class GameLotteryViewSetSSC(LotteryAnaBase):
     19. ** TSCount: ** &#8194 特三 累積開出次數
     """
 
+    default_playkey = 'WNLHC'
+
     def data_manipulate(self, df):
         super().data_manipulate(df)
 
         result = {}
-
+        Playkey = self.playkey
         ##### 單碼相關分析 #####
         if Playkey in ["WSJLHC", "WNWSJLHC", "CAF5WSJLHC"]:
             position = ['A1', 'A2', 'A3', 'A4', 'A5']
