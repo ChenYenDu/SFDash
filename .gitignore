@@ -4,3 +4,4 @@ static/
 venv/
 *.sqlit3
 .vscode/
+__pycache__/
